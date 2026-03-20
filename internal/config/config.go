@@ -11,21 +11,28 @@ import (
 
 // Config represents a tidal.yaml file.
 type Config struct {
-	Harness string            `yaml:"harness"`
-	Name    string            `yaml:"name"`
-	Lang    string            `yaml:"lang"`
-	Observe ObserveBlock       `yaml:"observe"`
-	Test    map[string]Task    `yaml:"test"`
-	Ship    ShipBlock          `yaml:"ship"`
-	Verify  VerifyBlock        `yaml:"verify"`
-	Vars    map[string]string  `yaml:"vars"`
-	Envs    map[string]EnvOver `yaml:"envs"`
+	Harness  string            `yaml:"harness"`
+	Name     string            `yaml:"name"`
+	Lang     string            `yaml:"lang"`
+	Observe  ObserveBlock      `yaml:"observe"`
+	Test     map[string]Task   `yaml:"test"`
+	Lint     map[string]Task   `yaml:"lint"`
+	Ship     ShipBlock         `yaml:"ship"`
+	Verify   VerifyBlock       `yaml:"verify"`
+	Worktree *WorktreeConfig   `yaml:"worktree"`
+	Grade    map[string]Task   `yaml:"grade"`
+	Vars     map[string]string `yaml:"vars"`
+	Envs     map[string]EnvOver `yaml:"envs"`
 }
 
 type ObserveBlock struct {
-	Logs   []NamedTask `yaml:"logs"`
-	Traces *Task       `yaml:"traces"`
-	Errors *Task       `yaml:"errors"`
+	Logs    []NamedTask `yaml:"logs"`
+	Metrics []NamedTask `yaml:"metrics"`
+	Traces  []NamedTask `yaml:"traces"`
+	CI      *Task       `yaml:"ci"`
+	Issues  *Task       `yaml:"issues"`
+	// deprecated: use Issues instead
+	Errors *Task `yaml:"errors"`
 }
 
 type NamedTask struct {
@@ -45,13 +52,19 @@ type Task struct {
 }
 
 type ShipBlock struct {
-	PR     *PRConfig          `yaml:"pr"`
-	Issue  *IssueConfig       `yaml:"issue"`
-	Deploy map[string]*Task   `yaml:"deploy"`
+	PR     *PRConfig        `yaml:"pr"`
+	Issue  *IssueConfig     `yaml:"issue"`
+	Deploy map[string]*Task `yaml:"deploy"`
 }
 
 type IssueConfig struct {
-	Repo   string   `yaml:"repo"`
+	Repo  string                       `yaml:"repo"`
+	Types map[string]IssueTypeConfig   `yaml:"types"`
+	// deprecated v1 field
+	Labels []string `yaml:"labels"`
+}
+
+type IssueTypeConfig struct {
 	Labels []string `yaml:"labels"`
 }
 
@@ -66,6 +79,12 @@ type VerifyBlock struct {
 	Health   *Task       `yaml:"health"`
 	Smoke    []NamedTask `yaml:"smoke"`
 	Rollback *Task       `yaml:"rollback"`
+}
+
+type WorktreeConfig struct {
+	Dir     string `yaml:"dir"`
+	Setup   string `yaml:"setup"`
+	Cleanup string `yaml:"cleanup"`
 }
 
 type EnvOver struct {
@@ -84,6 +103,17 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Vars == nil {
 		cfg.Vars = make(map[string]string)
+	}
+	// backward compat: observe.errors → observe.issues
+	if cfg.Observe.Issues == nil && cfg.Observe.Errors != nil {
+		cfg.Observe.Issues = cfg.Observe.Errors
+		fmt.Fprintln(os.Stderr, "warning: observe.errors is deprecated, use observe.issues")
+	}
+	// backward compat: ship.issue.labels → ship.issue.types.bug
+	if cfg.Ship.Issue != nil && len(cfg.Ship.Issue.Labels) > 0 && len(cfg.Ship.Issue.Types) == 0 {
+		cfg.Ship.Issue.Types = map[string]IssueTypeConfig{
+			"bug": {Labels: cfg.Ship.Issue.Labels},
+		}
 	}
 	return &cfg, nil
 }
@@ -109,8 +139,23 @@ func (c *Config) expand(s string) string {
 
 // TestTasks returns runner tasks for the test block.
 func (c *Config) TestTasks(names ...string) []runner.Task {
+	return c.blockTasks(c.Test, names...)
+}
+
+// LintTasks returns runner tasks for the lint block.
+func (c *Config) LintTasks(names ...string) []runner.Task {
+	return c.blockTasks(c.Lint, names...)
+}
+
+// GradeTasks returns runner tasks for the grade block.
+func (c *Config) GradeTasks(names ...string) []runner.Task {
+	return c.blockTasks(c.Grade, names...)
+}
+
+// blockTasks is a generic helper for map[string]Task blocks.
+func (c *Config) blockTasks(block map[string]Task, names ...string) []runner.Task {
 	var tasks []runner.Task
-	for name, t := range c.Test {
+	for name, t := range block {
 		if len(names) > 0 && !contains(names, name) {
 			continue
 		}
@@ -138,10 +183,40 @@ func (c *Config) ObserveTasks(kind string, names ...string) []runner.Task {
 			}
 			tasks = append(tasks, runner.Task{Name: "logs:" + l.Name, Cmd: c.expand(cmd)})
 		}
+	case "metrics":
+		for _, m := range c.Observe.Metrics {
+			if len(names) > 0 && !contains(names, m.Name) {
+				continue
+			}
+			cmd := m.Cmd
+			if cmd == "" && m.API != "" {
+				cmd = "curl -sf " + m.API
+			}
+			tasks = append(tasks, runner.Task{Name: "metrics:" + m.Name, Cmd: c.expand(cmd)})
+		}
+	case "traces":
+		for _, t := range c.Observe.Traces {
+			if len(names) > 0 && !contains(names, t.Name) {
+				continue
+			}
+			cmd := t.Cmd
+			if cmd == "" && t.API != "" {
+				cmd = "curl -sf " + t.API
+			}
+			tasks = append(tasks, runner.Task{Name: "traces:" + t.Name, Cmd: c.expand(cmd)})
+		}
+	case "ci":
+		if c.Observe.CI != nil {
+			tasks = append(tasks, runner.Task{Name: "ci", Cmd: c.expand(c.Observe.CI.Cmd)})
+		}
+	case "issues":
+		if c.Observe.Issues != nil {
+			tasks = append(tasks, runner.Task{Name: "issues", Cmd: c.expand(c.Observe.Issues.Cmd)})
+		}
 	case "errors":
-		if c.Observe.Errors != nil {
-			cmd := c.Observe.Errors.Cmd
-			tasks = append(tasks, runner.Task{Name: "errors", Cmd: c.expand(cmd)})
+		// backward compat
+		if c.Observe.Issues != nil {
+			tasks = append(tasks, runner.Task{Name: "issues", Cmd: c.expand(c.Observe.Issues.Cmd)})
 		}
 	}
 	return tasks
@@ -154,17 +229,27 @@ func (c *Config) ShipTasks(kind string, args ...string) []runner.Task {
 	case "pr":
 		if c.Ship.PR != nil {
 			cmd := fmt.Sprintf("gh pr create --base %s", c.Ship.PR.Base)
+			if len(args) >= 1 && args[0] != "" {
+				cmd += fmt.Sprintf(" --title %q", args[0])
+			}
+			if len(args) >= 2 && args[1] != "" {
+				cmd += fmt.Sprintf(" --body %q", args[1])
+			}
 			tasks = append(tasks, runner.Task{Name: "pr", Cmd: c.expand(cmd)})
 		}
 	case "issue":
 		if c.Ship.Issue != nil {
+			issueType := "feat"
 			title := "auto-reported issue"
 			body := ""
 			if len(args) >= 1 {
-				title = args[0]
+				issueType = args[0]
 			}
 			if len(args) >= 2 {
-				body = args[1]
+				title = args[1]
+			}
+			if len(args) >= 3 {
+				body = args[2]
 			}
 			repo := c.Ship.Issue.Repo
 			if repo == "" {
@@ -172,8 +257,11 @@ func (c *Config) ShipTasks(kind string, args ...string) []runner.Task {
 			}
 			cmd := fmt.Sprintf("gh issue create --repo %s --title %q --body %q",
 				repo, title, body)
-			for _, l := range c.Ship.Issue.Labels {
-				cmd += fmt.Sprintf(" --label %q", l)
+			// apply labels from type config
+			if tc, ok := c.Ship.Issue.Types[issueType]; ok {
+				for _, l := range tc.Labels {
+					cmd += fmt.Sprintf(" --label %q", l)
+				}
 			}
 			tasks = append(tasks, runner.Task{Name: "issue", Cmd: c.expand(cmd)})
 		}
@@ -191,24 +279,6 @@ func (c *Config) ShipTasks(kind string, args ...string) []runner.Task {
 		}
 	}
 	return tasks
-}
-
-// RunLoopSteps returns the ordered phases for a full autonomous loop.
-func (c *Config) RunLoopSteps() []string {
-	var steps []string
-	if len(c.Observe.Logs) > 0 || c.Observe.Errors != nil {
-		steps = append(steps, "observe")
-	}
-	if len(c.Test) > 0 {
-		steps = append(steps, "test")
-	}
-	if c.Ship.PR != nil {
-		steps = append(steps, "ship")
-	}
-	if c.Verify.Health != nil || len(c.Verify.Smoke) > 0 {
-		steps = append(steps, "verify")
-	}
-	return steps
 }
 
 // VerifyTasks returns runner tasks for verification.
@@ -245,11 +315,14 @@ func (c *Config) PrintStatus() {
 
 	fmt.Println("Capabilities:")
 	section("test", len(c.Test) > 0)
-	section("observe", len(c.Observe.Logs) > 0 || c.Observe.Errors != nil)
+	section("lint", len(c.Lint) > 0)
+	section("observe", len(c.Observe.Logs) > 0 || c.Observe.Issues != nil || c.Observe.CI != nil)
 	section("ship:pr", c.Ship.PR != nil)
 	section("ship:issue", c.Ship.Issue != nil)
 	section("ship:deploy", len(c.Ship.Deploy) > 0)
 	section("verify", c.Verify.Health != nil || len(c.Verify.Smoke) > 0)
+	section("worktree", c.Worktree != nil)
+	section("grade", len(c.Grade) > 0)
 }
 
 func contains(ss []string, s string) bool {

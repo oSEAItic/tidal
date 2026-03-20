@@ -1,29 +1,32 @@
-harness: v1
+harness: v2
 name: tidal
 lang: go
 
-# ---- observe: see what's happening ----
+# ── observe ──
 observe:
   logs:
     - name: git
       cmd: "git log --oneline -20"
     - name: build
       cmd: "go build ./cmd/tidal 2>&1 || true"
-    - name: ci
-      cmd: "gh run list --repo {{repo}} --limit 5"
-  errors:
-    cmd: "gh issue list --repo {{repo}} --label bug --state open"
+  ci:
+    cmd: "gh run list --repo {{repo}} --limit 5"
+  issues:
+    cmd: "gh issue list --repo {{repo}} --state open"
 
-# ---- test: validate changes ----
+# ── test ──
 test:
   build:
     cmd: "go build -o /dev/null ./cmd/tidal"
-  vet:
-    cmd: "go vet ./..."
   unit:
     cmd: "go test ./... -short"
 
-# ---- ship: deliver ----
+# ── lint ──
+lint:
+  vet:
+    cmd: "go vet ./..."
+
+# ── ship ──
 ship:
   pr:
     base: main
@@ -36,22 +39,40 @@ ship:
       {{test_output}}
   issue:
     repo: "{{repo}}"
-    labels:
-      - bug
+    types:
+      feat:
+        labels: [enhancement]
+      bug:
+        labels: [bug]
+      chore:
+        labels: [chore]
+      doc:
+        labels: [documentation]
 
-# ---- verify: confirm results ----
+# ── verify ──
 verify:
   health:
     cmd: "go build -o /dev/null ./cmd/tidal && echo 'binary builds OK'"
   smoke:
     - name: "cli help"
       cmd: "go run ./cmd/tidal --help > /dev/null"
-    - name: "cli init dry"
+    - name: "cli status"
       cmd: "go run ./cmd/tidal status"
-    - name: "ci status"
-      cmd: "gh run list --repo {{repo}} --limit 1 --json conclusion -q '.[0].conclusion' | grep -q success && echo 'CI green' || echo 'CI not green'"
 
-# ---- vars ----
+# ── worktree ──
+worktree:
+  dir: "/tmp/tidal-worktrees"
+  setup: "go mod download"
+  cleanup: ""
+
+# ── grade ──
+grade:
+  test_count:
+    cmd: "go test ./... -v -short 2>&1 | grep -c PASS || echo 0"
+  file_count:
+    cmd: "find . -name '*.go' -not -path './vendor/*' | wc -l | tr -d ' '"
+
+# ── vars ──
 vars:
   repo: "oSEAItic/tidal"
   summary: ""

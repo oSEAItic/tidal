@@ -19,18 +19,33 @@ type Task struct {
 	Confirm bool // require user confirmation
 }
 
-// Result holds the outcome of running a task.
-type Result struct {
-	Name   string `json:"name"`
-	Status string `json:"status"` // "pass" or "fail"
-	TimeMs int64  `json:"time_ms"`
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
+// TaskResult holds the outcome of running a single task.
+type TaskResult struct {
+	Name       string      `json:"name"`
+	Status     string      `json:"status"` // "pass", "fail", "skip"
+	TimeMs     int64       `json:"time_ms"`
+	Output     string      `json:"output,omitempty"`     // raw output (for humans)
+	Error      string      `json:"error,omitempty"`      // error message if failed
+	Structured interface{} `json:"structured,omitempty"` // structured data (for agents)
 }
 
-// Run executes tasks sequentially and prints results.
-func Run(tasks []Task, jsonOut bool) error {
-	var results []Result
+// Envelope is the unified JSON output for all tidal commands.
+type Envelope struct {
+	Command string       `json:"command"`
+	Tasks   []TaskResult `json:"tasks"`
+	Summary *Summary     `json:"summary,omitempty"`
+}
+
+// Summary provides counts for quick agent parsing.
+type Summary struct {
+	Total  int `json:"total"`
+	Passed int `json:"passed"`
+	Failed int `json:"failed"`
+}
+
+// Run executes tasks and prints results.
+func Run(command string, tasks []Task, jsonOut bool) error {
+	var results []TaskResult
 	var failed bool
 
 	for _, t := range tasks {
@@ -42,7 +57,7 @@ func Run(tasks []Task, jsonOut bool) error {
 	}
 
 	if jsonOut {
-		printJSON(results)
+		printJSON(command, results)
 	} else {
 		printTable(results)
 	}
@@ -53,7 +68,12 @@ func Run(tasks []Task, jsonOut bool) error {
 	return nil
 }
 
-func execute(t Task) Result {
+// RunSingle executes a single task and returns its result directly.
+func RunSingle(t Task) TaskResult {
+	return execute(t)
+}
+
+func execute(t Task) TaskResult {
 	start := time.Now()
 
 	timeout := time.Duration(t.Timeout) * time.Second
@@ -68,7 +88,7 @@ func execute(t Task) Result {
 	out, err := cmd.CombinedOutput()
 	elapsed := time.Since(start).Milliseconds()
 
-	r := Result{
+	r := TaskResult{
 		Name:   t.Name,
 		TimeMs: elapsed,
 		Output: strings.TrimSpace(string(out)),
@@ -84,7 +104,7 @@ func execute(t Task) Result {
 	return r
 }
 
-func printTable(results []Result) {
+func printTable(results []TaskResult) {
 	fmt.Printf("%-16s %-8s %-10s %s\n", "TASK", "STATUS", "TIME", "DETAIL")
 	fmt.Println(strings.Repeat("─", 60))
 
@@ -92,6 +112,8 @@ func printTable(results []Result) {
 		icon := "✅"
 		if r.Status == "fail" {
 			icon = "❌"
+		} else if r.Status == "skip" {
+			icon = "⏭️"
 		}
 		detail := r.Error
 		if len(detail) > 40 {
@@ -101,10 +123,30 @@ func printTable(results []Result) {
 	}
 }
 
-func printJSON(results []Result) {
+func printJSON(command string, results []TaskResult) {
+	passed := 0
+	failed := 0
+	for _, r := range results {
+		if r.Status == "pass" {
+			passed++
+		} else if r.Status == "fail" {
+			failed++
+		}
+	}
+
+	env := Envelope{
+		Command: command,
+		Tasks:   results,
+		Summary: &Summary{
+			Total:  len(results),
+			Passed: passed,
+			Failed: failed,
+		},
+	}
+
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(results)
+	_ = enc.Encode(env)
 }
 
 func fmtMs(ms int64) string {
