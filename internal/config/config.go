@@ -130,12 +130,13 @@ func (c *Config) ApplyEnv(name string) {
 	}
 }
 
-// expand replaces {{var}} placeholders with resolved values.
+// expand replaces {{var}} placeholders with resolved values,
+// then expands $ENV_VAR and ${ENV_VAR} from the environment.
 func (c *Config) expand(s string) string {
 	for k, v := range c.Vars {
 		s = strings.ReplaceAll(s, "{{"+k+"}}", v)
 	}
-	return s
+	return os.ExpandEnv(s)
 }
 
 // TestTasks returns runner tasks for the test block.
