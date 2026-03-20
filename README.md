@@ -161,22 +161,40 @@ go build -o tidal ./cmd/tidal
 | `-e, --env` | Environment override (e.g. `production`) |
 | `--json` | Structured JSON output |
 
+## Philosophy
+
+**Tidal is a tool, not an agent.**
+
+```
+Agent (Claude Code / Codex / Devin)     ← has a brain, makes decisions
+  │
+  ├── tidal test --json                  ← no brain, runs commands, returns data
+  ├── tidal observe --json
+  ├── tidal ship
+  └── tidal verify --json
+```
+
+Tidal doesn't decide what to do next. It executes what's declared in `tidal.yaml` and returns structured results. The agent decides whether to loop, escalate, or move on.
+
+Like `kubectl` is to Kubernetes operators. Like `gh` is to GitHub bots.
+
 ## Who is this for?
 
 | User | How they use Tidal |
 |------|-------------------|
-| **AI Agents** (Claude Code, Codex, Devin) | `tidal test --json` → parse results → fix → `tidal ship pr` |
+| **AI Agents** (Claude Code, Codex, Devin) | `tidal test --json` → parse → fix → `tidal ship pr` |
 | **Human devs** | `tidal deploy staging` instead of remembering kubectl commands |
 | **CI/CD** | `tidal test && tidal ship deploy` in GitHub Actions |
 
 ## Roadmap
 
 - [x] Phase 0: CLI scaffold + tidal.yaml schema
-- [ ] Phase 1: `tidal test` — full structured output
-- [ ] Phase 2: `tidal observe` — log/trace formatting
-- [ ] Phase 3: `tidal ship` — gh pr + deploy integration
-- [ ] Phase 4: `tidal verify` — health/smoke/rollback
-- [ ] Phase 5: `tidal run-loop` — full autonomous loop
+- [x] Phase 1: `test/observe/ship/verify` + `--json` + `run-loop`
+- [ ] Phase 2: `tidal worktree create/destroy` — isolated parallel execution
+- [ ] Phase 3: `tidal lint` — declarative rule engine (file size, imports, naming)
+- [ ] Phase 4: `tidal grade` — quality scoring (coverage, lint, docs)
+- [ ] Phase 5: `tidal observe` metrics/traces — PromQL/TraceQL support
+- [ ] Phase 6: `tidal drive` — app launch, screenshot, video recording
 
 ## License
 

@@ -164,16 +164,57 @@ JSON（`--json`）给 agent：
 
 ---
 
-### 实施路线
+### 定位澄清（2026-03-20）
 
-| Phase | 内容 | 状态 |
-|-------|------|------|
-| 0 | Go CLI 骨架 + tidal.yaml schema | ✅ Done |
-| 1 | `tidal test` — parse yaml, 执行 cmd, 结构化输出 | 🔜 Next |
-| 2 | `tidal observe` — 执行 log/trace 命令, 格式化输出 | |
-| 3 | `tidal ship` — gh pr + deploy cmd 封装 | |
-| 4 | `tidal verify` — health/smoke/rollback | |
-| 5 | `tidal run-loop` — 串联全部 | |
+**Tidal 是工具，不是 agent。**
+
+```
+Agent (Claude Code / Codex / Devin)     ← 有脑子，做决策
+  │
+  ├── tidal test          ← 执行，返回 JSON
+  ├── tidal observe       ← 执行，返回 JSON
+  ├── tidal ship          ← 执行，返回 JSON
+  ├── tidal verify        ← 执行，返回 JSON
+  ├── tidal lint          ← 执行，返回 JSON
+  ├── tidal worktree      ← 创建/销毁隔离环境
+  └── tidal grade         ← 量化，返回 JSON
+```
+
+类比：
+- `kubectl` 是工具，Kubernetes operator 是 agent
+- `gh` 是工具，GitHub bot 是 agent
+- `tidal` 是工具，Claude Code / Codex 是 agent
+
+**Tidal 不做决策。** Agent 调用 tidal 拿到结构化结果，自己决定下一步。
+要不要循环、要不要 escalate、要不要 review —— 都是 agent 的事。
+
+Tidal 的职责边界：
+- ✅ 执行声明在 tidal.yaml 里的命令
+- ✅ 返回结构化结果（`--json`）
+- ✅ 提供隔离执行环境
+- ✅ 量化代码质量指标
+- ❌ 自己做 review loop
+- ❌ 自己决定要不要 refactor
+- ❌ 自己决定要不要 escalate
+
+---
+
+### 实施路线（修订版）
+
+基于 OpenAI "Zero Lines of Code" 文章的 insight 重新梳理。
+只增加**工具能力**，不增加 agent 逻辑。
+
+| Phase | 内容 | 给 agent 提供的能力 | 状态 |
+|-------|------|-------------------|------|
+| 0 | CLI 骨架 + tidal.yaml schema | 基础框架 | ✅ Done |
+| 1 | `tidal test/observe/ship/verify` 全部跑通 | 完整的 observe→test→ship→verify 工具链 | ✅ Done |
+| 2 | `tidal worktree create/destroy` | Agent 可以并行在隔离环境工作 | |
+| 3 | `tidal lint` — 声明式规则引擎 | Agent 可以检查架构约束、命名、文件大小、import 方向 | |
+| 4 | `tidal grade` — 质量评分 | Agent 可以量化当前代码质量，决定要不要 refactor | |
+| 5 | `tidal observe` 扩展 metrics/traces | Agent 可以查 PromQL/TraceQL，不只是看日志 | |
+| 6 | `tidal drive start/screenshot/record` | Agent 可以启动 app、截图、录视频来验证 UI | |
+
+每个 phase 的产出都是：**agent 调一个命令，拿到 JSON 结果。**
 
 ---
 
