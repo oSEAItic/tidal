@@ -38,6 +38,7 @@ func main() {
 	root.AddCommand(observeCmd())
 	root.AddCommand(shipCmd())
 	root.AddCommand(verifyCmd())
+	root.AddCommand(reviewCmd())
 	root.AddCommand(worktreeCmd())
 	root.AddCommand(gradeCmd())
 	root.AddCommand(statusCmd())
@@ -111,6 +112,26 @@ func lintCmd() *cobra.Command {
 				return fmt.Errorf("no lint tasks configured")
 			}
 			return runner.Run("lint", tasks, jsonOutput)
+		},
+	}
+}
+
+// ── review ──
+
+func reviewCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "review [name...]",
+		Short: "Analyze current changes before shipping",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			tasks := cfg.ReviewTasks(args...)
+			if len(tasks) == 0 {
+				return fmt.Errorf("no review tasks configured")
+			}
+			return runner.Run("review", tasks, jsonOutput)
 		},
 	}
 }
@@ -495,6 +516,7 @@ func statusCmd() *cobra.Command {
 						"test":        capInfo(len(cfg.Test) > 0, mapKeys(cfg.Test)),
 						"lint":        capInfo(len(cfg.Lint) > 0, mapKeys(cfg.Lint)),
 						"observe":     capInfo(len(cfg.Observe.Logs) > 0 || cfg.Observe.Issues != nil || cfg.Observe.CI != nil, nil),
+						"review":      capInfo(len(cfg.Review) > 0, mapKeys(cfg.Review)),
 						"ship:pr":     capInfo(cfg.Ship.PR != nil, nil),
 						"ship:issue":  capInfo(cfg.Ship.Issue != nil, issueTypes(cfg.Ship.Issue)),
 						"ship:deploy": capInfo(len(cfg.Ship.Deploy) > 0, mapKeysTask(cfg.Ship.Deploy)),

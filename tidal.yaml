@@ -26,6 +26,19 @@ lint:
   vet:
     cmd: "go vet ./..."
 
+# ── review: analyze changes before shipping ──
+review:
+  diff:
+    cmd: "git diff --stat"
+  staged:
+    cmd: "git diff --cached --stat"
+  secrets:
+    cmd: "git diff HEAD | grep -inE '(password|secret|api.?key|token)\\s*[:=]' || echo 'none detected'"
+  todos:
+    cmd: "git diff HEAD | grep -c TODO || echo 0"
+  large_files:
+    cmd: "git diff --name-only HEAD | xargs -I{} find {} -size +500l 2>/dev/null || echo 'none'"
+
 # ── ship ──
 ship:
   pr:

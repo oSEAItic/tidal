@@ -19,6 +19,7 @@ type Config struct {
 	Lint     map[string]Task   `yaml:"lint"`
 	Ship     ShipBlock         `yaml:"ship"`
 	Verify   VerifyBlock       `yaml:"verify"`
+	Review   map[string]Task   `yaml:"review"`
 	Worktree *WorktreeConfig   `yaml:"worktree"`
 	Grade    map[string]Task   `yaml:"grade"`
 	Vars     map[string]string `yaml:"vars"`
@@ -145,6 +146,11 @@ func (c *Config) TestTasks(names ...string) []runner.Task {
 // LintTasks returns runner tasks for the lint block.
 func (c *Config) LintTasks(names ...string) []runner.Task {
 	return c.blockTasks(c.Lint, names...)
+}
+
+// ReviewTasks returns runner tasks for the review block.
+func (c *Config) ReviewTasks(names ...string) []runner.Task {
+	return c.blockTasks(c.Review, names...)
 }
 
 // GradeTasks returns runner tasks for the grade block.
@@ -315,6 +321,7 @@ func (c *Config) PrintStatus() {
 	section("test", len(c.Test) > 0)
 	section("lint", len(c.Lint) > 0)
 	section("observe", len(c.Observe.Logs) > 0 || c.Observe.Issues != nil || c.Observe.CI != nil)
+	section("review", len(c.Review) > 0)
 	section("ship:pr", c.Ship.PR != nil)
 	section("ship:issue", c.Ship.Issue != nil)
 	section("ship:deploy", len(c.Ship.Deploy) > 0)
