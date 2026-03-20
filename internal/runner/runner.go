@@ -13,10 +13,11 @@ import (
 // Task is a single executable unit.
 type Task struct {
 	Name    string
-	Cmd     string
-	Timeout int  // seconds, 0 = no limit
-	Retries int  // 0 = no retry
-	Confirm bool // require user confirmation
+	Cmd     string   // shell command (run via sh -c)
+	Args    []string // direct exec args (bypasses shell, preferred for user content)
+	Timeout int      // seconds, 0 = no limit
+	Retries int      // 0 = no retry
+	Confirm bool     // require user confirmation
 }
 
 // TaskResult holds the outcome of running a single task.
@@ -84,7 +85,13 @@ func execute(t Task) TaskResult {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", t.Cmd)
+	var cmd *exec.Cmd
+	if len(t.Args) > 0 {
+		// direct exec: no shell interpretation, safe for user content
+		cmd = exec.CommandContext(ctx, t.Args[0], t.Args[1:]...)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", t.Cmd)
+	}
 	out, err := cmd.CombinedOutput()
 	elapsed := time.Since(start).Milliseconds()
 

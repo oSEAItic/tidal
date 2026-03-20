@@ -228,14 +228,14 @@ func (c *Config) ShipTasks(kind string, args ...string) []runner.Task {
 	switch kind {
 	case "pr":
 		if c.Ship.PR != nil {
-			cmd := fmt.Sprintf("gh pr create --base %s", c.Ship.PR.Base)
+			ghArgs := []string{"gh", "pr", "create", "--base", c.Ship.PR.Base}
 			if len(args) >= 1 && args[0] != "" {
-				cmd += fmt.Sprintf(" --title %q", args[0])
+				ghArgs = append(ghArgs, "--title", args[0])
 			}
 			if len(args) >= 2 && args[1] != "" {
-				cmd += fmt.Sprintf(" --body %q", args[1])
+				ghArgs = append(ghArgs, "--body", args[1])
 			}
-			tasks = append(tasks, runner.Task{Name: "pr", Cmd: c.expand(cmd)})
+			tasks = append(tasks, runner.Task{Name: "pr", Args: ghArgs})
 		}
 	case "issue":
 		if c.Ship.Issue != nil {
@@ -255,15 +255,13 @@ func (c *Config) ShipTasks(kind string, args ...string) []runner.Task {
 			if repo == "" {
 				repo = c.Vars["repo"]
 			}
-			cmd := fmt.Sprintf("gh issue create --repo %s --title %q --body %q",
-				repo, title, body)
-			// apply labels from type config
+			ghArgs := []string{"gh", "issue", "create", "--repo", c.expand(repo), "--title", title, "--body", body}
 			if tc, ok := c.Ship.Issue.Types[issueType]; ok {
 				for _, l := range tc.Labels {
-					cmd += fmt.Sprintf(" --label %q", l)
+					ghArgs = append(ghArgs, "--label", l)
 				}
 			}
-			tasks = append(tasks, runner.Task{Name: "issue", Cmd: c.expand(cmd)})
+			tasks = append(tasks, runner.Task{Name: "issue", Args: ghArgs})
 		}
 	case "deploy":
 		target := "staging"
