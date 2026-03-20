@@ -32,6 +32,7 @@ func main() {
 	root.AddCommand(shipCmd())
 	root.AddCommand(verifyCmd())
 	root.AddCommand(statusCmd())
+	root.AddCommand(runLoopCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -135,6 +136,21 @@ func shipCmd() *cobra.Command {
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
+		Use:   "issue [title] [body]",
+		Short: "Create a GitHub issue",
+		RunE: func(c *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			tasks := cfg.ShipTasks("issue", args...)
+			if len(tasks) == 0 {
+				return fmt.Errorf("ship.issue not configured in tidal.yaml")
+			}
+			return runner.Run(tasks, jsonOutput)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
 		Use:   "deploy [env]",
 		Short: "Deploy to environment",
 		RunE: func(c *cobra.Command, args []string) error {
@@ -185,4 +201,65 @@ func statusCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// ── run-loop ──
+
+func runLoopCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "run-loop",
+		Short: "Full autonomous loop: observe → test → ship → verify",
+		Long:  "Runs configured phases sequentially. Stops on first failure unless --force is set.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+
+			steps := cfg.RunLoopSteps()
+			if len(steps) == 0 {
+				return fmt.Errorf("no phases configured — run tidal init first")
+			}
+
+			fmt.Printf("run-loop: %s\n\n", joinArrow(steps))
+
+			for _, step := range steps {
+				fmt.Printf("── %s ──\n", step)
+				var tasks []runner.Task
+				switch step {
+				case "observe":
+					tasks = cfg.ObserveTasks("errors")
+					tasks = append(tasks, cfg.ObserveTasks("logs")...)
+				case "test":
+					tasks = cfg.TestTasks()
+				case "ship":
+					tasks = cfg.ShipTasks("pr")
+				case "verify":
+					tasks = cfg.VerifyTasks()
+				}
+				if len(tasks) == 0 {
+					fmt.Printf("  (skipped — no tasks)\n\n")
+					continue
+				}
+				if err := runner.Run(tasks, jsonOutput); err != nil {
+					return fmt.Errorf("run-loop stopped at %s: %w", step, err)
+				}
+				fmt.Println()
+			}
+
+			fmt.Println("run-loop: complete ✓")
+			return nil
+		},
+	}
+}
+
+func joinArrow(ss []string) string {
+	result := ""
+	for i, s := range ss {
+		if i > 0 {
+			result += " → "
+		}
+		result += s
+	}
+	return result
 }

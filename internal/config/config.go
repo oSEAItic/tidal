@@ -46,7 +46,13 @@ type Task struct {
 
 type ShipBlock struct {
 	PR     *PRConfig          `yaml:"pr"`
+	Issue  *IssueConfig       `yaml:"issue"`
 	Deploy map[string]*Task   `yaml:"deploy"`
+}
+
+type IssueConfig struct {
+	Repo   string   `yaml:"repo"`
+	Labels []string `yaml:"labels"`
 }
 
 type PRConfig struct {
@@ -150,6 +156,27 @@ func (c *Config) ShipTasks(kind string, args ...string) []runner.Task {
 			cmd := fmt.Sprintf("gh pr create --base %s", c.Ship.PR.Base)
 			tasks = append(tasks, runner.Task{Name: "pr", Cmd: c.expand(cmd)})
 		}
+	case "issue":
+		if c.Ship.Issue != nil {
+			title := "auto-reported issue"
+			body := ""
+			if len(args) >= 1 {
+				title = args[0]
+			}
+			if len(args) >= 2 {
+				body = args[1]
+			}
+			repo := c.Ship.Issue.Repo
+			if repo == "" {
+				repo = c.Vars["repo"]
+			}
+			cmd := fmt.Sprintf("gh issue create --repo %s --title %q --body %q",
+				repo, title, body)
+			for _, l := range c.Ship.Issue.Labels {
+				cmd += fmt.Sprintf(" --label %q", l)
+			}
+			tasks = append(tasks, runner.Task{Name: "issue", Cmd: c.expand(cmd)})
+		}
 	case "deploy":
 		target := "staging"
 		if len(args) > 0 {
@@ -164,6 +191,24 @@ func (c *Config) ShipTasks(kind string, args ...string) []runner.Task {
 		}
 	}
 	return tasks
+}
+
+// RunLoopSteps returns the ordered phases for a full autonomous loop.
+func (c *Config) RunLoopSteps() []string {
+	var steps []string
+	if len(c.Observe.Logs) > 0 || c.Observe.Errors != nil {
+		steps = append(steps, "observe")
+	}
+	if len(c.Test) > 0 {
+		steps = append(steps, "test")
+	}
+	if c.Ship.PR != nil {
+		steps = append(steps, "ship")
+	}
+	if c.Verify.Health != nil || len(c.Verify.Smoke) > 0 {
+		steps = append(steps, "verify")
+	}
+	return steps
 }
 
 // VerifyTasks returns runner tasks for verification.
@@ -202,6 +247,7 @@ func (c *Config) PrintStatus() {
 	section("test", len(c.Test) > 0)
 	section("observe", len(c.Observe.Logs) > 0 || c.Observe.Errors != nil)
 	section("ship:pr", c.Ship.PR != nil)
+	section("ship:issue", c.Ship.Issue != nil)
 	section("ship:deploy", len(c.Ship.Deploy) > 0)
 	section("verify", c.Verify.Health != nil || len(c.Verify.Smoke) > 0)
 }
