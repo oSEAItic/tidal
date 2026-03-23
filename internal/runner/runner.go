@@ -44,8 +44,8 @@ type Summary struct {
 	Failed int `json:"failed"`
 }
 
-// Run executes tasks and prints results.
-func Run(command string, tasks []Task, jsonOut bool) error {
+// Run executes tasks, prints results, and returns the envelope.
+func Run(command string, tasks []Task, jsonOut bool) (*Envelope, error) {
 	var results []TaskResult
 	var failed bool
 
@@ -57,16 +57,41 @@ func Run(command string, tasks []Task, jsonOut bool) error {
 		}
 	}
 
+	env := buildEnvelope(command, results)
+
 	if jsonOut {
-		printJSON(command, results)
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(env)
 	} else {
 		printTable(results)
 	}
 
 	if failed {
-		return fmt.Errorf("one or more tasks failed")
+		return &env, fmt.Errorf("one or more tasks failed")
 	}
-	return nil
+	return &env, nil
+}
+
+func buildEnvelope(command string, results []TaskResult) Envelope {
+	passed := 0
+	failed := 0
+	for _, r := range results {
+		if r.Status == "pass" {
+			passed++
+		} else if r.Status == "fail" {
+			failed++
+		}
+	}
+	return Envelope{
+		Command: command,
+		Tasks:   results,
+		Summary: &Summary{
+			Total:  len(results),
+			Passed: passed,
+			Failed: failed,
+		},
+	}
 }
 
 // RunSingle executes a single task and returns its result directly.
@@ -130,31 +155,6 @@ func printTable(results []TaskResult) {
 	}
 }
 
-func printJSON(command string, results []TaskResult) {
-	passed := 0
-	failed := 0
-	for _, r := range results {
-		if r.Status == "pass" {
-			passed++
-		} else if r.Status == "fail" {
-			failed++
-		}
-	}
-
-	env := Envelope{
-		Command: command,
-		Tasks:   results,
-		Summary: &Summary{
-			Total:  len(results),
-			Passed: passed,
-			Failed: failed,
-		},
-	}
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(env)
-}
 
 func fmtMs(ms int64) string {
 	if ms < 1000 {

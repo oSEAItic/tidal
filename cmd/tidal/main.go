@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/oSEAItic/tidal/internal/config"
+	"github.com/oSEAItic/tidal/internal/history"
 	"github.com/oSEAItic/tidal/internal/runner"
 	"github.com/spf13/cobra"
 )
@@ -41,6 +42,8 @@ func main() {
 	root.AddCommand(reviewCmd())
 	root.AddCommand(worktreeCmd())
 	root.AddCommand(gradeCmd())
+	root.AddCommand(topologyCmd())
+	root.AddCommand(historyCmd())
 	root.AddCommand(statusCmd())
 
 	if err := root.Execute(); err != nil {
@@ -62,6 +65,15 @@ func loadConfig() (*config.Config, error) {
 // readStdinJSON reads JSON from stdin into the provided target.
 func readStdinJSON(target interface{}) error {
 	return json.NewDecoder(os.Stdin).Decode(target)
+}
+
+// runAndRecord runs tasks, prints output, and appends to history.
+func runAndRecord(cfg *config.Config, command string, tasks []runner.Task) error {
+	env, err := runner.Run(command, tasks, jsonOutput)
+	if env != nil && cfg.History != nil {
+		_ = history.Append(cfg.HistoryDir(), *env)
+	}
+	return err
 }
 
 // ── init ──
@@ -91,7 +103,7 @@ func testCmd() *cobra.Command {
 			if len(tasks) == 0 {
 				return fmt.Errorf("no test tasks configured")
 			}
-			return runner.Run("test", tasks, jsonOutput)
+			return runAndRecord(cfg, "test", tasks)
 		},
 	}
 }
@@ -111,7 +123,7 @@ func lintCmd() *cobra.Command {
 			if len(tasks) == 0 {
 				return fmt.Errorf("no lint tasks configured")
 			}
-			return runner.Run("lint", tasks, jsonOutput)
+			return runAndRecord(cfg, "lint", tasks)
 		},
 	}
 }
@@ -131,7 +143,7 @@ func reviewCmd() *cobra.Command {
 			if len(tasks) == 0 {
 				return fmt.Errorf("no review tasks configured")
 			}
-			return runner.Run("review", tasks, jsonOutput)
+			return runAndRecord(cfg, "review", tasks)
 		},
 	}
 }
@@ -169,7 +181,7 @@ func observeCmd() *cobra.Command {
 				if len(tasks) == 0 {
 					return fmt.Errorf("observe.%s not configured", kind)
 				}
-				return runner.Run("observe", tasks, jsonOutput)
+				return runAndRecord(cfg, "observe", tasks)
 			},
 		})
 	}
@@ -213,7 +225,7 @@ func shipCmd() *cobra.Command {
 			if len(tasks) == 0 {
 				return fmt.Errorf("ship.pr not configured")
 			}
-			return runner.Run("ship", tasks, jsonOutput)
+			return runAndRecord(cfg, "ship", tasks)
 		},
 	})
 
@@ -243,7 +255,7 @@ func shipCmd() *cobra.Command {
 			if len(tasks) == 0 {
 				return fmt.Errorf("ship.issue not configured")
 			}
-			return runner.Run("ship", tasks, jsonOutput)
+			return runAndRecord(cfg, "ship", tasks)
 		},
 	})
 
@@ -263,7 +275,7 @@ func shipCmd() *cobra.Command {
 			if len(tasks) == 0 {
 				return fmt.Errorf("ship.deploy.%s not configured", target)
 			}
-			return runner.Run("ship", tasks, jsonOutput)
+			return runAndRecord(cfg, "ship", tasks)
 		},
 	})
 
@@ -285,7 +297,7 @@ func verifyCmd() *cobra.Command {
 			if len(tasks) == 0 {
 				return fmt.Errorf("no verify tasks configured")
 			}
-			return runner.Run("verify", tasks, jsonOutput)
+			return runAndRecord(cfg, "verify", tasks)
 		},
 	}
 }
@@ -491,7 +503,7 @@ func gradeCmd() *cobra.Command {
 			if len(tasks) == 0 {
 				return fmt.Errorf("no grade tasks configured")
 			}
-			return runner.Run("grade", tasks, jsonOutput)
+			return runAndRecord(cfg, "grade", tasks)
 		},
 	}
 }
@@ -523,6 +535,10 @@ func statusCmd() *cobra.Command {
 						"verify":      capInfo(cfg.Verify.Health != nil || len(cfg.Verify.Smoke) > 0, nil),
 						"worktree":    capInfo(cfg.Worktree != nil, nil),
 						"grade":       capInfo(len(cfg.Grade) > 0, mapKeys(cfg.Grade)),
+						"topology":    capInfo(cfg.Topology != nil && len(cfg.Topology.Services) > 0, nil),
+						"paths":       capInfo(len(cfg.Paths) > 0, nil),
+						"external":    capInfo(len(cfg.External) > 0, nil),
+						"history":     capInfo(cfg.History != nil, nil),
 					},
 				}
 				enc := json.NewEncoder(os.Stdout)
@@ -568,4 +584,117 @@ func issueTypes(ic *config.IssueConfig) []string {
 		types = append(types, t)
 	}
 	return types
+}
+
+// ── topology ──
+
+func topologyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "topology",
+		Short: "Show project service topology",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			if cfg.Topology == nil || len(cfg.Topology.Services) == 0 {
+				return fmt.Errorf("topology not configured in tidal.yaml")
+			}
+
+			if jsonOutput {
+				out := map[string]interface{}{
+					"command":  "topology",
+					"services": cfg.Topology.Services,
+					"paths":    cfg.Paths,
+					"external": cfg.External,
+				}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
+
+			fmt.Println("Services:")
+			for _, s := range cfg.Topology.Services {
+				detail := s.Lang
+				if detail == "" {
+					detail = s.Type
+				}
+				deps := ""
+				if len(s.DependsOn) > 0 {
+					deps = " → depends on: " + strings.Join(s.DependsOn, ", ")
+				}
+				port := ""
+				if s.Port > 0 {
+					port = fmt.Sprintf(" :%d", s.Port)
+				}
+				fmt.Printf("  %-16s %-8s %-20s%s%s\n", s.Name, detail, s.Path, port, deps)
+			}
+
+			if len(cfg.Paths) > 0 {
+				fmt.Println("\nPaths:")
+				for k, v := range cfg.Paths {
+					fmt.Printf("  %-16s %s\n", k, v)
+				}
+			}
+
+			if len(cfg.External) > 0 {
+				fmt.Println("\nExternal:")
+				for k, v := range cfg.External {
+					fmt.Printf("  %-16s %s\n", k, v)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// ── history ──
+
+func historyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "history [limit]",
+		Short: "Show run history",
+		RunE: func(c *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+
+			limit := 20
+			if len(args) > 0 {
+				fmt.Sscanf(args[0], "%d", &limit)
+			}
+
+			records, err := history.Read(cfg.HistoryDir(), limit)
+			if err != nil {
+				return err
+			}
+			if len(records) == 0 {
+				fmt.Println("no history yet")
+				return nil
+			}
+
+			if jsonOutput {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(records)
+			}
+
+			fmt.Printf("%-22s %-12s %s\n", "TIME", "COMMAND", "RESULT")
+			fmt.Println(strings.Repeat("─", 50))
+			for _, r := range records {
+				result := "—"
+				if r.Summary != nil {
+					if r.Summary.Failed > 0 {
+						result = fmt.Sprintf("❌ %d/%d failed", r.Summary.Failed, r.Summary.Total)
+					} else {
+						result = fmt.Sprintf("✅ %d passed", r.Summary.Passed)
+					}
+				}
+				fmt.Printf("%-22s %-12s %s\n", r.Timestamp[:19], r.Command, result)
+			}
+			return nil
+		},
+	}
+	return cmd
 }

@@ -22,8 +22,31 @@ type Config struct {
 	Review   map[string]Task   `yaml:"review"`
 	Worktree *WorktreeConfig   `yaml:"worktree"`
 	Grade    map[string]Task   `yaml:"grade"`
+	Topology *TopologyBlock    `yaml:"topology"`
+	Paths    map[string]string `yaml:"paths"`
+	External map[string]string `yaml:"external"`
+	History  *HistoryConfig    `yaml:"history"`
 	Vars     map[string]string `yaml:"vars"`
 	Envs     map[string]EnvOver `yaml:"envs"`
+}
+
+// TopologyBlock describes the project's service architecture.
+type TopologyBlock struct {
+	Services []ServiceInfo `yaml:"services"`
+}
+
+type ServiceInfo struct {
+	Name      string   `yaml:"name"`
+	Lang      string   `yaml:"lang,omitempty"`
+	Type      string   `yaml:"type,omitempty"` // e.g. "postgres", "redis"
+	Path      string   `yaml:"path,omitempty"`
+	Port      int      `yaml:"port,omitempty"`
+	Cmd       string   `yaml:"cmd,omitempty"`
+	DependsOn []string `yaml:"depends_on,omitempty"`
+}
+
+type HistoryConfig struct {
+	Dir string `yaml:"dir"` // default ".tidal/"
 }
 
 type ObserveBlock struct {
@@ -329,6 +352,18 @@ func (c *Config) PrintStatus() {
 	section("verify", c.Verify.Health != nil || len(c.Verify.Smoke) > 0)
 	section("worktree", c.Worktree != nil)
 	section("grade", len(c.Grade) > 0)
+	section("topology", c.Topology != nil && len(c.Topology.Services) > 0)
+	section("paths", len(c.Paths) > 0)
+	section("external", len(c.External) > 0)
+	section("history", c.History != nil)
+}
+
+// HistoryDir returns the directory for run history, defaulting to ".tidal/".
+func (c *Config) HistoryDir() string {
+	if c.History != nil && c.History.Dir != "" {
+		return c.History.Dir
+	}
+	return ".tidal"
 }
 
 func contains(ss []string, s string) bool {
