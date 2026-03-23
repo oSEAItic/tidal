@@ -60,9 +60,12 @@ func TestRunPass(t *testing.T) {
 		{Name: "a", Cmd: "echo a"},
 		{Name: "b", Cmd: "echo b"},
 	}
-	err := Run("test", tasks, false)
+	env, err := Run("test", tasks, false)
 	if err != nil {
 		t.Errorf("Run returned error: %v", err)
+	}
+	if env.Summary.Passed != 2 {
+		t.Errorf("Summary.Passed = %d, want 2", env.Summary.Passed)
 	}
 }
 
@@ -71,8 +74,11 @@ func TestRunFail(t *testing.T) {
 		{Name: "ok", Cmd: "echo ok"},
 		{Name: "bad", Cmd: "exit 1"},
 	}
-	err := Run("test", tasks, false)
+	env, err := Run("test", tasks, false)
 	if err == nil {
 		t.Error("Run should return error when task fails")
+	}
+	if env.Summary.Failed != 1 {
+		t.Errorf("Summary.Failed = %d, want 1", env.Summary.Failed)
 	}
 }

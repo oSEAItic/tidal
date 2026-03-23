@@ -85,6 +85,33 @@ grade:
   file_count:
     cmd: "find . -name '*.go' -not -path './vendor/*' | wc -l | tr -d ' '"
 
+# ── topology: what is this project ──
+topology:
+  services:
+    - name: tidal-cli
+      lang: go
+      path: ./cmd/tidal
+      depends_on: []
+
+# ── paths: where things are ──
+paths:
+  cli_entry: "./cmd/tidal/main.go"
+  config_pkg: "./internal/config/"
+  runner_pkg: "./internal/runner/"
+  history_pkg: "./internal/history/"
+  docs: "./doc/"
+  schema_design: "./doc/schema-v2-design.md"
+
+# ── external: outside dependencies ──
+external:
+  ci: "GitHub Actions"
+  issues: "GitHub Issues"
+  repo: "github.com/oSEAItic/tidal"
+
+# ── history: run recording ──
+history:
+  dir: ".tidal"
+
 # ── vars ──
 vars:
   repo: "oSEAItic/tidal"
