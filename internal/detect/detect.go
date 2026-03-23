@@ -21,7 +21,13 @@ type Result struct {
 	Topology []Service
 	Paths    map[string]string
 	External map[string]string
-	Repo     string
+	Repo   string
+	Refine []Hint
+}
+
+type Hint struct {
+	File string
+	Hint string
 }
 
 type Service struct {
@@ -182,6 +188,57 @@ func Scan(dir string) Result {
 		})
 	}
 
+	// refine: tell agents which files to read to improve this config
+	refineTargets := []struct {
+		file string
+		hint string
+	}{
+		{"Makefile", "may contain actual build/test/deploy targets that override defaults"},
+		{"README.md", "may describe setup steps, architecture, and deploy process"},
+		{"CONTRIBUTING.md", "may describe dev workflow and testing requirements"},
+		{"docker-compose.yml", "may define services, ports, and dependencies"},
+		{"docker-compose.yaml", "may define services, ports, and dependencies"},
+		{"compose.yaml", "may define services, ports, and dependencies"},
+		{".env.example", "may list required environment variables"},
+		{".github/workflows/ci.yml", "may show actual CI test/build/deploy commands"},
+		{".github/workflows/ci.yaml", "may show actual CI test/build/deploy commands"},
+		{".github/workflows/deploy.yml", "may show deploy process and environments"},
+		{".github/workflows/deploy.yaml", "may show deploy process and environments"},
+		{"AGENTS.md", "may contain agent-specific instructions and constraints"},
+		{"CLAUDE.md", "may contain agent-specific instructions and constraints"},
+		{"package.json", "scripts section may have additional commands beyond test/lint/build"},
+		{"pyproject.toml", "may contain tool configs, extras, and script definitions"},
+		{"Taskfile.yml", "may contain task definitions that replace Makefile targets"},
+		{"justfile", "may contain task definitions that replace Makefile targets"},
+	}
+	for _, t := range refineTargets {
+		if exists(dir, t.file) {
+			r.Refine = append(r.Refine, Hint{File: t.file, Hint: t.hint})
+		}
+	}
+
+	// also scan for CI workflow files dynamically
+	if dirExists(dir, ".github/workflows") {
+		entries, _ := os.ReadDir(filepath.Join(dir, ".github/workflows"))
+		for _, e := range entries {
+			name := ".github/workflows/" + e.Name()
+			// skip ones we already added
+			alreadyAdded := false
+			for _, h := range r.Refine {
+				if h.File == name {
+					alreadyAdded = true
+					break
+				}
+			}
+			if !alreadyAdded && (strings.HasSuffix(e.Name(), ".yml") || strings.HasSuffix(e.Name(), ".yaml")) {
+				r.Refine = append(r.Refine, Hint{
+					File: name,
+					Hint: "CI workflow — may contain test/build/deploy commands",
+				})
+			}
+		}
+	}
+
 	return r
 }
 
@@ -317,6 +374,16 @@ func (r Result) ToYAML() string {
 	// history
 	b.WriteString("\nhistory:\n")
 	b.WriteString("  dir: \".tidal\"\n")
+
+	// refine
+	if len(r.Refine) > 0 {
+		b.WriteString("\n# ── refine: agent should read these files to improve this config ──\n")
+		b.WriteString("refine:\n")
+		for _, h := range r.Refine {
+			b.WriteString("  - file: \"" + h.File + "\"\n")
+			b.WriteString("    hint: \"" + h.Hint + "\"\n")
+		}
+	}
 
 	// vars
 	b.WriteString("\nvars:\n")

@@ -26,8 +26,15 @@ type Config struct {
 	Paths    map[string]string `yaml:"paths"`
 	External map[string]string `yaml:"external"`
 	History  *HistoryConfig    `yaml:"history"`
+	Refine   []RefineHint      `yaml:"refine,omitempty"`
 	Vars     map[string]string `yaml:"vars"`
 	Envs     map[string]EnvOver `yaml:"envs"`
+}
+
+// RefineHint tells agents which files to read to improve this config.
+type RefineHint struct {
+	File string `yaml:"file"`
+	Hint string `yaml:"hint"`
 }
 
 // TopologyBlock describes the project's service architecture.
