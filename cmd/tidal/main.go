@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/oSEAItic/tidal/internal/config"
+	"github.com/oSEAItic/tidal/internal/detect"
 	"github.com/oSEAItic/tidal/internal/history"
 	"github.com/oSEAItic/tidal/internal/runner"
 	"github.com/spf13/cobra"
@@ -79,13 +80,55 @@ func runAndRecord(cfg *config.Config, command string, tasks []runner.Task) error
 // ── init ──
 
 func initCmd() *cobra.Command {
-	return &cobra.Command{
+	var blank bool
+	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Generate a tidal.yaml template in the current directory",
+		Short: "Auto-detect repo and generate tidal.yaml",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return config.WriteTemplate("tidal.yaml")
+			if blank {
+				return config.WriteTemplate("tidal.yaml")
+			}
+
+			if _, err := os.Stat("tidal.yaml"); err == nil {
+				return fmt.Errorf("tidal.yaml already exists (use --blank to overwrite with template)")
+			}
+
+			dir, _ := os.Getwd()
+			result := detect.Scan(dir)
+			yaml := result.ToYAML()
+
+			if err := os.WriteFile("tidal.yaml", []byte(yaml), 0644); err != nil {
+				return err
+			}
+
+			if jsonOutput {
+				out := map[string]interface{}{
+					"command":  "init",
+					"name":     result.Name,
+					"lang":     result.Lang,
+					"detected": map[string]interface{}{
+						"test":     len(result.Test),
+						"lint":     len(result.Lint),
+						"deploy":   len(result.Deploy),
+						"services": len(result.Topology),
+						"paths":    len(result.Paths),
+						"external": len(result.External),
+						"repo":     result.Repo,
+					},
+				}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
+
+			fmt.Printf("Detected: %s (%s)\n", result.Name, result.Lang)
+			fmt.Printf("Created tidal.yaml with %d test, %d lint, %d deploy, %d services\n",
+				len(result.Test), len(result.Lint), len(result.Deploy), len(result.Topology))
+			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&blank, "blank", false, "generate blank template instead of auto-detecting")
+	return cmd
 }
 
 // ── test ──
