@@ -2,6 +2,7 @@ package detect
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,9 +32,12 @@ type Hint struct {
 }
 
 type Service struct {
-	Name string
-	Lang string
-	Path string
+	Name      string
+	Lang      string
+	Type      string   // e.g. "postgres", "redis"
+	Path      string
+	Port      int
+	DependsOn []string
 }
 
 // Scan analyzes the given directory and returns detected capabilities.
@@ -49,52 +53,20 @@ func Scan(dir string) Result {
 
 	r.Repo = detectRepo(dir)
 
-	// language detection (order matters — first match wins for primary lang)
-	if exists(dir, "go.mod") {
-		r.Lang = "go"
-		r.Build = detectGoBuild(dir)
-		r.Test["build"] = r.Build
-		r.Test["unit"] = "go test ./... -short"
-		r.Lint["vet"] = "go vet ./..."
-	}
-	if exists(dir, "package.json") {
-		if r.Lang == "" {
-			r.Lang = "typescript"
-		}
-		r.Test["unit"] = detectNPMScript(dir, "test")
-		if lint := detectNPMScript(dir, "lint"); lint != "" {
-			r.Lint["lint"] = lint
-		}
-		if build := detectNPMScript(dir, "build"); build != "" {
-			r.Test["build"] = build
+	// language detection — scan root AND immediate subdirs (monorepo/multi-service)
+	detectLang(dir, &r, "")
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") && e.Name() != "node_modules" && e.Name() != "vendor" {
+			detectLang(filepath.Join(dir, e.Name()), &r, e.Name())
 		}
 	}
-	if exists(dir, "pyproject.toml") || exists(dir, "requirements.txt") || exists(dir, "setup.py") {
-		if r.Lang == "" {
-			r.Lang = "python"
-		}
-		r.Test["unit"] = "pytest"
-		if exists(dir, "ruff.toml") || existsInFile(dir, "pyproject.toml", "ruff") {
-			r.Lint["ruff"] = "ruff check ."
-		} else {
-			r.Lint["flake8"] = "flake8 ."
-		}
-	}
-	if exists(dir, "Cargo.toml") {
-		if r.Lang == "" {
-			r.Lang = "rust"
-		}
-		r.Test["unit"] = "cargo test"
-		r.Test["build"] = "cargo build"
-		r.Lint["clippy"] = "cargo clippy -- -D warnings"
-	}
-	if exists(dir, "Gemfile") {
-		if r.Lang == "" {
-			r.Lang = "ruby"
-		}
-		r.Test["unit"] = "bundle exec rspec"
-		r.Lint["rubocop"] = "bundle exec rubocop"
-	}
+
+	// Makefile parsing — overrides detected commands
+	parseMakefile(dir, &r)
+
+	// docker-compose parsing — extract services for topology
+	parseDockerCompose(dir, &r)
 
 	// CI detection
 	if dirExists(dir, ".github/workflows") {
@@ -116,14 +88,31 @@ func Scan(dir string) Result {
 		r.Deploy["local"] = "docker compose up -d"
 		r.External["container"] = "Docker"
 	}
-	if dirExists(dir, "k8s") || dirExists(dir, "kubernetes") || dirExists(dir, "deploy/k8s") {
-		r.Deploy["staging"] = "kubectl apply -k k8s/overlays/staging"
-		r.External["orchestration"] = "Kubernetes"
-		kdir := "k8s/"
-		if dirExists(dir, "kubernetes") {
-			kdir = "kubernetes/"
+	// k8s detection — check multiple common patterns
+	for _, kp := range []struct{ dir, path string }{
+		{"k8s", "k8s/"},
+		{"kubernetes", "kubernetes/"},
+		{"deploy/k8s", "deploy/k8s/"},
+		{"deploy/kube", "deploy/kube/"},
+		{"deploy", "deploy/"},
+	} {
+		if dirExists(dir, kp.dir) {
+			// check if it actually contains k8s manifests
+			hasYAML := false
+			kEntries, _ := os.ReadDir(filepath.Join(dir, kp.dir))
+			for _, ke := range kEntries {
+				if strings.HasSuffix(ke.Name(), ".yml") || strings.HasSuffix(ke.Name(), ".yaml") {
+					hasYAML = true
+					break
+				}
+			}
+			if hasYAML || kp.dir == "k8s" || kp.dir == "kubernetes" {
+				r.Deploy["k8s"] = "kubectl apply -f " + kp.path
+				r.External["orchestration"] = "Kubernetes"
+				r.Paths["k8s"] = kp.path
+				break
+			}
 		}
-		r.Paths["k8s"] = kdir
 	}
 	if exists(dir, "vercel.json") || exists(dir, ".vercel") {
 		r.Deploy["production"] = "vercel deploy --prod --token $VERCEL_TOKEN"
@@ -350,8 +339,21 @@ func (r Result) ToYAML() string {
 		b.WriteString("  services:\n")
 		for _, s := range r.Topology {
 			b.WriteString("    - name: " + s.Name + "\n")
-			b.WriteString("      lang: " + s.Lang + "\n")
-			b.WriteString("      path: " + s.Path + "\n")
+			if s.Lang != "" {
+				b.WriteString("      lang: " + s.Lang + "\n")
+			}
+			if s.Type != "" {
+				b.WriteString("      type: " + s.Type + "\n")
+			}
+			if s.Path != "" {
+				b.WriteString("      path: " + s.Path + "\n")
+			}
+			if s.Port > 0 {
+				b.WriteString(fmt.Sprintf("      port: %d\n", s.Port))
+			}
+			if len(s.DependsOn) > 0 {
+				b.WriteString("      depends_on: [" + strings.Join(s.DependsOn, ", ") + "]\n")
+			}
 		}
 	}
 
@@ -433,7 +435,328 @@ jobs:
 `
 }
 
+// ── deep detection functions ──
+
+// detectLang scans a directory for language markers and adds to result.
+// subdir is "" for root, or "backend"/"frontend" etc for subdirs.
+func detectLang(dir string, r *Result, subdir string) {
+	prefix := ""
+	if subdir != "" {
+		prefix = subdir + "/"
+	}
+
+	if exists(dir, "go.mod") {
+		if r.Lang == "" {
+			r.Lang = "go"
+		}
+		build := detectGoBuild(dir)
+		if subdir == "" {
+			r.Build = build
+			r.Test["build"] = build
+			r.Test["unit"] = "go test ./... -short"
+			r.Lint["vet"] = "go vet ./..."
+		} else {
+			r.Test["build:"+subdir] = "cd " + subdir + " && go build ./..."
+			r.Test["unit:"+subdir] = "cd " + subdir + " && go test ./... -short"
+			r.Lint["vet:"+subdir] = "cd " + subdir + " && go vet ./..."
+		}
+		r.Paths[subdir+"_source"] = prefix
+	}
+	if exists(dir, "package.json") {
+		if r.Lang == "" {
+			r.Lang = "typescript"
+		}
+		if subdir == "" {
+			if t := detectNPMScript(dir, "test"); t != "" {
+				r.Test["unit"] = t
+			}
+			if l := detectNPMScript(dir, "lint"); l != "" {
+				r.Lint["lint"] = l
+			}
+			if b := detectNPMScript(dir, "build"); b != "" {
+				r.Test["build"] = b
+			}
+		} else {
+			pm := detectPM(dir)
+			if t := detectNPMScript(dir, "test"); t != "" {
+				r.Test["unit:"+subdir] = "cd " + subdir + " && " + t
+			}
+			if l := detectNPMScript(dir, "lint"); l != "" {
+				r.Lint["lint:"+subdir] = "cd " + subdir + " && " + l
+			}
+			if b := detectNPMScript(dir, "build"); b != "" {
+				r.Test["build:"+subdir] = "cd " + subdir + " && " + b
+			}
+			_ = pm
+		}
+		r.Paths[subdir+"_source"] = prefix
+	}
+	if exists(dir, "pyproject.toml") || exists(dir, "requirements.txt") || exists(dir, "setup.py") {
+		if r.Lang == "" {
+			r.Lang = "python"
+		}
+		hasPoetry := exists(dir, "poetry.lock")
+		if subdir == "" {
+			if hasPoetry {
+				r.Test["unit"] = "poetry run pytest"
+			} else {
+				r.Test["unit"] = "pytest"
+			}
+			if exists(dir, "ruff.toml") || existsInFile(dir, "pyproject.toml", "ruff") {
+				if hasPoetry {
+					r.Lint["ruff"] = "poetry run ruff check ."
+				} else {
+					r.Lint["ruff"] = "ruff check ."
+				}
+			}
+		} else {
+			if hasPoetry {
+				r.Test["unit:"+subdir] = "cd " + subdir + " && poetry run pytest"
+			} else {
+				r.Test["unit:"+subdir] = "cd " + subdir + " && pytest"
+			}
+			if existsInFile(dir, "pyproject.toml", "ruff") {
+				if hasPoetry {
+					r.Lint["ruff:"+subdir] = "cd " + subdir + " && poetry run ruff check ."
+				} else {
+					r.Lint["ruff:"+subdir] = "cd " + subdir + " && ruff check ."
+				}
+			}
+		}
+		r.Paths[subdir+"_source"] = prefix
+	}
+	if exists(dir, "Cargo.toml") {
+		if r.Lang == "" {
+			r.Lang = "rust"
+		}
+		if subdir == "" {
+			r.Test["unit"] = "cargo test"
+			r.Test["build"] = "cargo build"
+			r.Lint["clippy"] = "cargo clippy -- -D warnings"
+		} else {
+			r.Test["unit:"+subdir] = "cd " + subdir + " && cargo test"
+			r.Test["build:"+subdir] = "cd " + subdir + " && cargo build"
+			r.Lint["clippy:"+subdir] = "cd " + subdir + " && cargo clippy -- -D warnings"
+		}
+	}
+}
+
+// parseMakefile reads Makefile and extracts known targets.
+// If Makefile has test/lint/format/deploy targets, they override detected commands.
+func parseMakefile(dir string, r *Result) {
+	data, err := os.ReadFile(filepath.Join(dir, "Makefile"))
+	if err != nil {
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+	targets := make(map[string]bool)
+	for _, line := range lines {
+		if len(line) > 0 && line[0] != '\t' && line[0] != '#' && line[0] != '.' {
+			if idx := strings.Index(line, ":"); idx > 0 {
+				target := strings.TrimSpace(line[:idx])
+				if !strings.ContainsAny(target, " =$(){}") {
+					targets[target] = true
+				}
+			}
+		}
+	}
+
+	// override with make targets (they're the canonical commands)
+	if targets["test"] {
+		r.Test["unit"] = "make test"
+	}
+	if targets["lint"] {
+		r.Lint["lint"] = "make lint"
+	}
+	if targets["format"] || targets["fmt"] {
+		r.Lint["format"] = "make format"
+	}
+	if targets["build"] {
+		r.Test["build"] = "make build"
+		r.Build = "make build"
+	}
+	if targets["docker-build"] {
+		r.Test["docker-build"] = "make docker-build"
+	}
+	if targets["docker-up"] {
+		r.Deploy["local"] = "make docker-up"
+	}
+	if targets["docker-down"] {
+		r.Deploy["local-down"] = "make docker-down"
+	}
+	if targets["deploy"] {
+		r.Deploy["production"] = "make deploy"
+	}
+	if targets["install"] {
+		r.Build = "make install"
+	}
+	if targets["dev"] {
+		r.Deploy["dev"] = "make dev"
+	}
+}
+
+// parseDockerCompose reads docker-compose.yml and extracts services for topology.
+func parseDockerCompose(dir string, r *Result) {
+	var data []byte
+	var err error
+	for _, name := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yaml", "compose.yml"} {
+		data, err = os.ReadFile(filepath.Join(dir, name))
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return
+	}
+
+	// simple YAML parsing for docker-compose services
+	// we don't import a full YAML parser to keep detect lightweight
+	type composeService struct {
+		name      string
+		image     string
+		build     string
+		ports     []string
+		dependsOn []string
+	}
+
+	var services []composeService
+	lines := strings.Split(string(data), "\n")
+	inServices := false
+	currentService := ""
+	currentIndent := 0
+	inDependsOn := false
+	inPorts := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+
+		if trimmed == "services:" {
+			inServices = true
+			currentIndent = indent
+			continue
+		}
+
+		if inServices && indent == currentIndent+2 && strings.HasSuffix(trimmed, ":") {
+			// new service
+			currentService = strings.TrimSuffix(trimmed, ":")
+			services = append(services, composeService{name: currentService})
+			inDependsOn = false
+			inPorts = false
+			continue
+		}
+
+		if currentService == "" {
+			continue
+		}
+
+		svc := &services[len(services)-1]
+
+		if indent == currentIndent+4 {
+			inDependsOn = false
+			inPorts = false
+
+			if strings.HasPrefix(trimmed, "image:") {
+				svc.image = strings.TrimSpace(strings.TrimPrefix(trimmed, "image:"))
+			} else if strings.HasPrefix(trimmed, "build:") {
+				svc.build = strings.TrimSpace(strings.TrimPrefix(trimmed, "build:"))
+			} else if trimmed == "ports:" {
+				inPorts = true
+			} else if trimmed == "depends_on:" {
+				inDependsOn = true
+			}
+		} else if indent > currentIndent+4 {
+			if inPorts && strings.HasPrefix(trimmed, "- \"") {
+				port := strings.Trim(trimmed[2:], "\"")
+				svc.ports = append(svc.ports, port)
+			} else if inPorts && strings.HasPrefix(trimmed, "- ") {
+				port := strings.TrimPrefix(trimmed, "- ")
+				svc.ports = append(svc.ports, port)
+			} else if inDependsOn && strings.HasPrefix(trimmed, "- ") {
+				dep := strings.TrimPrefix(trimmed, "- ")
+				svc.dependsOn = append(svc.dependsOn, dep)
+			} else if inDependsOn && strings.HasSuffix(trimmed, ":") {
+				// depends_on with condition syntax
+				dep := strings.TrimSuffix(trimmed, ":")
+				svc.dependsOn = append(svc.dependsOn, dep)
+			}
+		}
+
+		// top-level key other than services — stop parsing services
+		if inServices && indent == currentIndent && trimmed != "services:" {
+			break
+		}
+	}
+
+	// convert to topology
+	if len(services) > 0 {
+		r.Topology = nil // clear default
+		for _, svc := range services {
+			s := Service{Name: svc.name}
+
+			// detect lang/type from image or build context
+			if svc.image != "" {
+				img := strings.ToLower(svc.image)
+				if strings.Contains(img, "postgres") {
+					s.Type = "postgres"
+				} else if strings.Contains(img, "redis") {
+					s.Type = "redis"
+				} else if strings.Contains(img, "mongo") {
+					s.Type = "mongodb"
+				} else if strings.Contains(img, "mysql") {
+					s.Type = "mysql"
+				} else if strings.Contains(img, "nginx") {
+					s.Type = "nginx"
+				} else if strings.Contains(img, "rabbitmq") {
+					s.Type = "rabbitmq"
+				}
+			}
+			if svc.build != "" {
+				s.Path = svc.build
+				// detect lang from build context
+				buildDir := strings.TrimPrefix(svc.build, "./")
+				if exists(filepath.Join(dir, buildDir), "go.mod") {
+					s.Lang = "go"
+				} else if exists(filepath.Join(dir, buildDir), "package.json") {
+					s.Lang = "typescript"
+				} else if exists(filepath.Join(dir, buildDir), "pyproject.toml") || exists(filepath.Join(dir, buildDir), "requirements.txt") {
+					s.Lang = "python"
+				} else if exists(filepath.Join(dir, buildDir), "Cargo.toml") {
+					s.Lang = "rust"
+				}
+			}
+
+			// extract host port from port mapping
+			if len(svc.ports) > 0 {
+				port := svc.ports[0]
+				if parts := strings.SplitN(port, ":", 2); len(parts) == 2 {
+					fmt.Sscanf(parts[0], "%d", &s.Port)
+				}
+			}
+
+			s.DependsOn = svc.dependsOn
+			r.Topology = append(r.Topology, s)
+		}
+	}
+}
+
 // helpers
+
+func detectPM(dir string) string {
+	if exists(dir, "pnpm-lock.yaml") {
+		return "pnpm"
+	} else if exists(dir, "yarn.lock") {
+		return "yarn"
+	} else if exists(dir, "bun.lockb") {
+		return "bun"
+	}
+	return "npm"
+}
 
 func exists(dir, name string) bool {
 	_, err := os.Stat(filepath.Join(dir, name))
