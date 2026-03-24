@@ -396,6 +396,43 @@ func (r Result) ToYAML() string {
 	return b.String()
 }
 
+// GenerateCIWorkflow returns a GitHub Actions workflow that runs tidal.
+func GenerateCIWorkflow() string {
+	return `name: tidal
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tidal
+        run: |
+          curl -sf https://raw.githubusercontent.com/oSEAItic/tidal/main/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Test
+        run: tidal test --json
+
+      - name: Lint
+        run: tidal lint --json
+        continue-on-error: true
+
+      - name: Review
+        run: tidal review --json
+        continue-on-error: true
+
+      - name: Grade
+        run: tidal grade --json
+        continue-on-error: true
+`
+}
+
 // helpers
 
 func exists(dir, name string) bool {

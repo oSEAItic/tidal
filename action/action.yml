@@ -1,0 +1,45 @@
+name: "Tidal Harness"
+description: "Run tidal autoharness checks on your repo"
+branding:
+  icon: "anchor"
+  color: "blue"
+
+inputs:
+  commands:
+    description: "Space-separated tidal commands to run (default: test lint review grade)"
+    required: false
+    default: "test lint review grade"
+  json:
+    description: "Output as JSON"
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install tidal
+      shell: bash
+      run: |
+        curl -sf https://raw.githubusercontent.com/oSEAItic/tidal/main/install.sh | sh
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: Check tidal.yaml
+      shell: bash
+      run: |
+        if [ ! -f tidal.yaml ]; then
+          echo "No tidal.yaml found. Running tidal init..."
+          tidal init
+        fi
+
+    - name: Run tidal commands
+      shell: bash
+      run: |
+        FLAG=""
+        if [ "${{ inputs.json }}" = "true" ]; then
+          FLAG="--json"
+        fi
+        for cmd in ${{ inputs.commands }}; do
+          echo "::group::tidal $cmd"
+          tidal $cmd $FLAG || true
+          echo "::endgroup::"
+        done

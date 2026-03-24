@@ -12,6 +12,7 @@ import (
 	"github.com/oSEAItic/tidal/internal/detect"
 	"github.com/oSEAItic/tidal/internal/history"
 	"github.com/oSEAItic/tidal/internal/runner"
+	"github.com/oSEAItic/tidal/mcp"
 	"github.com/spf13/cobra"
 )
 
@@ -46,6 +47,7 @@ func main() {
 	root.AddCommand(topologyCmd())
 	root.AddCommand(historyCmd())
 	root.AddCommand(statusCmd())
+	root.AddCommand(mcpCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -101,11 +103,24 @@ func initCmd() *cobra.Command {
 				return err
 			}
 
+			// generate CI workflow if .github/workflows doesn't have tidal.yml
+			ciDir := filepath.Join(dir, ".github", "workflows")
+			ciPath := filepath.Join(ciDir, "tidal.yml")
+			ciGenerated := false
+			if _, err := os.Stat(ciPath); os.IsNotExist(err) {
+				_ = os.MkdirAll(ciDir, 0755)
+				if err := os.WriteFile(ciPath, []byte(detect.GenerateCIWorkflow()), 0644); err == nil {
+					ciGenerated = true
+				}
+			}
+			_ = ciGenerated // used in output below
+
 			if jsonOutput {
 				out := map[string]interface{}{
-					"command":  "init",
-					"name":     result.Name,
-					"lang":     result.Lang,
+					"command": "init",
+					"name":    result.Name,
+					"lang":    result.Lang,
+					"files":   []string{"tidal.yaml"},
 					"detected": map[string]interface{}{
 						"test":     len(result.Test),
 						"lint":     len(result.Lint),
@@ -115,6 +130,10 @@ func initCmd() *cobra.Command {
 						"external": len(result.External),
 						"repo":     result.Repo,
 					},
+				}
+				if ciGenerated {
+					out["files"] = []string{"tidal.yaml", ".github/workflows/tidal.yml"}
+					out["ci"] = "github-actions"
 				}
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
@@ -627,6 +646,19 @@ func issueTypes(ic *config.IssueConfig) []string {
 		types = append(types, t)
 	}
 	return types
+}
+
+// ── mcp ──
+
+func mcpCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "mcp",
+		Short:  "Run as MCP server (JSON-RPC over stdio)",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return mcp.Serve()
+		},
+	}
 }
 
 // ── topology ──
